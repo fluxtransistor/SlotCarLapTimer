@@ -12,13 +12,6 @@ f=0
 smin = 8000
 smax = 100000
 flag=( (580, 130), (850, 600) )
-cars=[(0,0,0)]*4
-best_laps=[0]*4
-nums_laps=[0]*4
-last_logs=[0]*4
-
-DIFFERENCE = 80
-TIME_THRESH = 0.5
 
 def hsv_to_rgb(h, s, v):
     if s == 0.0: v*=255; return (v, v, v)
@@ -51,26 +44,6 @@ def rgb_to_hsv(o):
     v = mx*100
     return h, s, v
 
-def difference(clr1, clr2):
-    dif = 0
-    for i in range(3):
-        dif += abs(clr1[i]-clr2[i])*100
-    return dif
-
-def findcar(clr):
-    min, minindex = -1,-1
-    for i in range(len(cars)):
-        d = difference(cars[i],clr)
-        if d < min or min < 0:
-            if difference < DIFFERENCE:
-                min = d
-                minindex = i
-    return i
-
-def timerecorded(clr,timestamp):
-    
-            
-
 def translate(value, leftMin, leftMax):
     # Figure out how 'wide' each range is
     leftSpan = leftMax - leftMin
@@ -99,6 +72,9 @@ def main():
     # e.g. instead of 20,20 you can try 30,30.
     kernel = np.ones((30,30),np.uint8)
     phist=[((0,0),0)]
+    prevlap = time.time()
+    currlap = time.time()
+    laptime=0
     clr=(0,0,0)
     while(True):
         # Capture frame-by-frame
@@ -145,25 +121,27 @@ def main():
             
             if (x2,y2) > flag[0]:
                 if (x2,y2) < flag[1]:
-                    currtime=time.time()
-                    laptime=(int((currlap-prevlap)*1000))/1000
-                    col= back_sub.apply(frame)
-                    col, col2 = col[y:y+h, x:x+w], frame[y:y+h, x:x+w]
-                    cv2.imshow("clip",col2)
-                    countpx=0
-                    ra,ga,ba=(0,0,0)
-                    for y in range(h//10,h//2,4):
-                        for x in range(w//4,3*w//4,4):
-                            if col[y, x]==255:
-                                ra += col2[y,x][0]
-                                ga += col2[y,x][1]
-                                ba += col2[y,x][2]
-                                countpx+=1
-                    ra=int(ra/(countpx+1))
-                    ga=int(ga/(countpx+1))
-                    ba=int(ba/(countpx+1))
-                    clr = (ra,ga,ba)
-                    timerecorded(clr,currtime)
+                    if (time.time() - currlap) > 0.2:
+                        prevlap=currlap
+                        currlap=time.time()
+                        laptime=(int((currlap-prevlap)*1000))/1000
+                        col= back_sub.apply(frame)
+                        col, col2 = col[y:y+h, x:x+w], frame[y:y+h, x:x+w]
+                        cv2.imshow("clip",col2)
+                        countpx=0
+                        ra,ga,ba=(0,0,0)
+                        for y in range(h//10,h//2,4):
+                            for x in range(w//4,3*w//4,4):
+                                if col[y, x]==255:
+                                    ra += col2[y,x][0]
+                                    ga += col2[y,x][1]
+                                    ba += col2[y,x][2]
+                                    countpx+=1
+                        print(countpx)
+                        ra=int(ra/(countpx+1))
+                        ga=int(ga/(countpx+1))
+                        ba=int(ba/(countpx+1))
+                        clr = (ra,ga,ba)
                 cv2.circle(frame,(x2,y2),8,clr,-1)
             # Print the centroid coordinates (we'll use the center of the
 ##            # bounding box) on the image
@@ -195,10 +173,7 @@ def main():
     
         
         frame = cv2.rectangle(frame,flag[0],flag[1],clr)
-        frame = cv2.rectangle(frame,(0,620),(320,720),cars[1],-1)
-        frame = cv2.rectangle(frame,(320,620),(640,720),cars[2],-1)
-        frame = cv2.rectangle(frame,(640,620),(720,960),cars[3],-1)
-        frame = cv2.rectangle(frame,(640,620),(960,1280),cars[4],-1)
+        frame = cv2.rectangle(frame,(0,620),(1280,720),clr,-1)
         frame = cv2.putText(frame, str(laptime), (8,705), cv2.FONT_HERSHEY_SIMPLEX, 3, (255,255,255),2,cv2.LINE_AA)
         cv2.imshow('frame',frame)
  
