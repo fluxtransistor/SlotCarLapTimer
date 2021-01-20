@@ -1,12 +1,7 @@
-#!/usr/bin/env python
- 
 
-from __future__ import print_function # Python 2/3 compatibility
-import cv2 # Import the OpenCV library
-import numpy as np # Import Numpy library
-import math
+import cv2
+import numpy as np
 import time
-FMT = '%H:%M:%S'
  
 f=0
 smin = 8000
@@ -22,7 +17,7 @@ TIME_THRESH = 0.5
 
 def hsv_to_rgb(h, s, v):
     if s == 0.0: v*=255; return (v, v, v)
-    i = int(h*6.) # XXX assume int() truncates!
+    i = int(h*6.)
     f = (h*6.)-i; p,q,t = int(255*(v*(1.-s))), int(255*(v*(1.-s*f))), int(255*(v*(1.-s*(1.-f)))); v*=255; i%=6
     if i == 0: return (v, t, p)
     if i == 1: return (q, v, p)
@@ -68,18 +63,8 @@ def findcar(clr):
     return i
 
 def timerecorded(clr,timestamp):
-    
-            
+    pass
 
-def translate(value, leftMin, leftMax):
-    # Figure out how 'wide' each range is
-    leftSpan = leftMax - leftMin
-
-    # Convert the left range into a 0-1 range (float)
-    valueScaled = float(value - leftMin) / float(leftSpan)
-
-    # Convert the 0-1 range into a value in the right range.
-    return valueScaled / 3
      
 def main():
 
@@ -89,41 +74,23 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
     cap.set(cv2.CAP_PROP_EXPOSURE, -5.0)
-    # Create the background subtractor object
-    # Use the last 700 video frames to build the background
     back_sub = cv2.createBackgroundSubtractorMOG2(history=150, 
         varThreshold=25, detectShadows=True)
- 
-    # Create kernel for morphological operation
-    # You can tweak the dimensions of the kernel
-    # e.g. instead of 20,20 you can try 30,30.
+
     kernel = np.ones((30,30),np.uint8)
     phist=[((0,0),0)]
     clr=(0,0,0)
     while(True):
-        # Capture frame-by-frame
-        # This method returns True/False as well
-        # as the video frame.
+
         ret, frame = cap.read()
-        # Use every frame to calculate the foreground mask and update
-        # the background
         
         fg_mask = back_sub.apply(frame)
         
         fg_mask = cv2.medianBlur(fg_mask, 5)
         
         cv2.imshow("bs",fg_mask)
-        # Close dark gaps in foreground object using closing
-        #fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel)
-        
-        # Remove salt and pepper noise with a median filter
-        
-        
-         
-        # Threshold the image to make it either black or white
         _, fg_mask = cv2.threshold(fg_mask,127,255,cv2.THRESH_BINARY)
- 
-        # Find the index of the largest contour and draw bounding box
+
         fg_mask_bb = fg_mask
         contours, hierarchy = cv2.findContours(fg_mask_bb,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)[-2:]
         areas = [cv2.contourArea(c) for c in contours]
@@ -134,12 +101,9 @@ def main():
         for c in contours:
             if c is None:
                 continue
-            # Draw the bounding box
             cnt = c
             x,y,w,h = cv2.boundingRect(cnt)
-            #cv2.rectangle(frame,(x,y),(x+w,y+h),(255,255,255),2)
-     
-            # Draw circle in the center of the bounding box
+
             x2 = x + int(w/2)
             y2 = y + int(h/2)
             
@@ -165,34 +129,6 @@ def main():
                     clr = (ra,ga,ba)
                     timerecorded(clr,currtime)
                 cv2.circle(frame,(x2,y2),8,clr,-1)
-            # Print the centroid coordinates (we'll use the center of the
-##            # bounding box) on the image
-##            x8,y8=phist[len(phist)-1][0]
-##            d = math.sqrt(((x2-x8)**2)+((y2-y8)**2))
-##            if d == 0:
-##                continue
-##            phist.append(((x2,y2),d,time.time()*1000))
-##            if len(phist)>100000:
-##                phist.pop(0)
-##        for i in range(len(phist)):
-##            if i < len(phist)-2 and phist[i][1] > 40:
-##                phist.pop(i)
-##                continue
-##        v=0
-##        v2=0
-##        v3=0
-##        v4=0
-##        for i in range(2,len(phist)):
-##            if phist[i][1]<50:
-##                if phist[i][2]==phist[i-1][2]:
-##                    continue
-##                v5,v4,v3,v2=v4,v3,v2,v
-##                v=phist[i][1]/(phist[i][2]-phist[i-1][2])
-##                #cv2.line(frame, phist[i][0], phist[i-1][0], hsv_to_rgb((v*1.5)%1,1,1), thickness=2)
-##                cv2.circle(frame,phist[i][0],4,hsv_to_rgb(((3+v+v2+v3+v4+v5)/4)%1,1,1),-1) 
-            
-        # Display the resulting frame
-    
         
         frame = cv2.rectangle(frame,flag[0],flag[1],clr)
         frame = cv2.rectangle(frame,(0,620),(320,720),cars[1],-1)
@@ -202,12 +138,11 @@ def main():
         frame = cv2.putText(frame, str(laptime), (8,705), cv2.FONT_HERSHEY_SIMPLEX, 3, (255,255,255),2,cv2.LINE_AA)
         cv2.imshow('frame',frame)
  
-        # If "q" is pressed on the keyboard, 
-        # exit this loop
+
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
  
-    # Close down the video stream
+
     cap.release()
     cv2.destroyAllWindows()
  
