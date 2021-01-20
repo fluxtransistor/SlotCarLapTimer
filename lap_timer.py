@@ -1,11 +1,12 @@
 import cv2
-import numpy as np
 import time
+import sys
 
 # set camera parameters
 VIDEO_DEVICE = 1  # change this if the wrong camera is detected
 RESOLUTION = (1280, 720)  # the resolution must be supported by the camera, it uses defaults otherwise
 EXPOSURE = -5  # set to zero for default, probably powers of 2 (-5 = 1/16)
+MINIMUM_FRAME_TIME = 1000 / 30  # in milliseconds, to prevent duplicate frame processing
 
 # set detection parameters
 MINIMUM_CONTOUR_SIZE = 8000  # minimum pixel area for valid contours
@@ -15,9 +16,6 @@ DETECTION_BOX = ((580, 130), (850, 600))  # coordinates for the finish line boun
 # set identification parameters
 MAX_DIFFERENCE = 80  # maximum RGB difference to identify a car (0 - 768)
 TIME_THRESHOLD = 0.5  # minimum time difference before detecting a new lap
-
-
-
 
 
 def hsv_to_rgb(h, s, v):  # convert float HSV to byte RGB
@@ -63,7 +61,7 @@ def average_colour(image, mask):  # averages some pixels in image where the corr
     r_total = int(r_total / (pixel_count + 1))
     g_total = int(g_total / (pixel_count + 1))
     b_total = int(b_total / (pixel_count + 1))
-    clr = (r_total, g_total, b_total)
+    return r_total, g_total, b_total
 
 
 def difference(clr1, clr2):  # find the sum of absolute differences between two RGB values (0 - 768)
@@ -84,9 +82,12 @@ def select_similar_colour(colour, colour_list, maximum_difference):  # returns t
     return minimum_index
 
 
-def timerecorded(clr, timestamp):
-    most_similar = select_similar_colour(clr)
+def record_time(colour, timestamp):
     pass
+
+
+def current_time_ms():
+    return int(time.time() * 1000)
 
 
 def main():
@@ -98,54 +99,64 @@ def main():
     cars_last_lap = []  # int for each car's last lap time in milliseconds
 
     # Initialize the video capture
-    cap = cv2.VideoCapture(VIDEO_DEVICE)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, RESOLUTION[0])
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, RESOLUTION[1])
+    capture = cv2.VideoCapture(VIDEO_DEVICE)
+    capture.set(cv2.CAP_PROP_FRAME_WIDTH, RESOLUTION[0])
+    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, RESOLUTION[1])
     if EXPOSURE < 0:  # otherwise use defaults
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)  # turn automatic exposure off
-        cap.set(cv2.CAP_PROP_EXPOSURE, EXPOSURE)
-    back_sub = cv2.createBackgroundSubtractorMOG2(history=150, varThreshold=25, detectShadows=True)
+        capture.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)  # turn automatic exposure off
+        capture.set(cv2.CAP_PROP_EXPOSURE, EXPOSURE)
+    background_subtractor = cv2.createBackgroundSubtractorMOG2(history=150, varThreshold=25, detectShadows=True)
 
-    kernel = np.ones((30, 30), np.uint8)
-    phist = [((0, 0), 0)]
-    clr = (0, 0, 0)
-    while (True):
+    # initialize the last frame time
+    last_frame_time = current_time_ms()
 
-        ret, frame = cap.read()
+    while True:
+        # code below is executed for every frame
 
-        fg_mask = back_sub.apply(frame)
+        if last_frame_time + 20 > current_time_ms():  # checks whether the minimum frame time elapsed
+            continue
+        last_frame_time = current_time_ms()
 
-        fg_mask = cv2.medianBlur(fg_mask, 5)
+        # capture the video frame
+        return_value, frame = capture.read()
+        if not return_value:
+            print("The frame could not be captured.", file=sys.stderr)
+            break
+        cv2.imshow('frame', frame)
+        # make a motion_mask and process it
+        motion_mask = background_subtractor.apply(frame)
+        motion_mask = cv2.medianBlur(motion_mask, 5)  # blur the mask to reduce noise
+        motion_mask = cv2.threshold(motion_mask, 127, 255, cv2.THRESH_BINARY)[1]  # clamp everything to 0 or 255
+        cv2.imshow("Slot Car Lap Timer: Motion Mask", motion_mask)  # optionally show motion_mask in a separate window
 
-        cv2.imshow("bs", fg_mask)
-        _, fg_mask = cv2.threshold(fg_mask, 127, 255, cv2.THRESH_BINARY)
+        # find contours
 
-        fg_mask_bb = fg_mask
-        contours, hierarchy = cv2.findContours(fg_mask_bb, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[-2:]
-        areas = [cv2.contourArea(c) for c in contours]
-        for i in range(len(areas)):
-            if areas[i] < MINIMUM_CONTOUR_SIZE or areas[i] > MAXIMUM_CONTOUR_SIZE:
-                contours[i] = None
+        contours = cv2.findContours(motion_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[-2:][1]  # checks a maximum of 6 contours
+        contour_areas = [cv2.contourArea(c) for c in contours]
+        for i in range(len(contour_areas)):
+            if contour_areas[i] < MINIMUM_CONTOUR_SIZE or contour_areas[i] > MAXIMUM_CONTOUR_SIZE:
+                contours[i] = None  # invalidate the contour if it is too large or small
 
-        for c in contours:
-            if c is None:
+        for contour in contours:
+            if contour is None:
                 continue
-            cnt = c
-            x, y, w, h = cv2.boundingRect(cnt)
-            x2 = x + int(w / 2)
-            y2 = y + int(h / 2)
 
-            if (x2, y2) > DETECTION_BOX[0]:
-                if (x2, y2) < DETECTION_BOX[1]:
-                    currtime = time.time()
-                    laptime = (int((currlap - prevlap) * 1000)) / 1000
-                    col = back_sub.apply(frame)
-                    col, col2 = col[y:y + h, x:x + w], frame[y:y + h, x:x + w]
-                    cv2.imshow("clip", col2)
+            # executes for each valid contour
+            x, y, w, h = cv2.boundingRect(contour)
+            x_center = x + int(w / 2)
+            y_center = y + int(h / 2)
+
+            if (x_center, y_center) > DETECTION_BOX[0]:
+                if (x_center, y_center) < DETECTION_BOX[1]:
+                    time_detected = current_time_ms()
+                    mask_clip = background_subtractor.apply(frame)
+                    # create cropped clips of the captured motion
+                    mask_clip, frame_clip = mask_clip[y:y + h, x:x + w], frame[y:y + h, x:x + w]
+                    # cv2.imshow("clip", frame_clip) #  display the captured motion clip for debugging
                     countpx = 0
 
-                    timerecorded(clr, currtime)
-                cv2.circle(frame, (x2, y2), 8, clr, -1)
+                    record_time((0, 0, 0), time_detected)
+                cv2.circle(frame, (x_center, y_center), 8, (255, 255, 255), -1)
 
         # frame = cv2.rectangle(frame, flag[0], flag[1], clr)
         # frame = cv2.rectangle(frame, (0, 620), (320, 720), cars[1], -1)
@@ -158,10 +169,9 @@ def main():
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    cap.release()
+    capture.release()
     cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':
-    print(__doc__)
     main()
