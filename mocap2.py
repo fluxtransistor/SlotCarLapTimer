@@ -2,16 +2,22 @@ import cv2
 import numpy as np
 import time
 
-smin = 8000
-smax = 100000
-flag = ((580, 130), (850, 600))
-cars = [(0, 0, 0)] * 4
-best_laps = [0] * 4
-nums_laps = [0] * 4
-last_logs = [0] * 4
+# set camera parameters
+VIDEO_DEVICE = 1  # change this if the wrong camera is detected
+RESOLUTION = (1280, 720)  # the resolution must be supported by the camera, it uses defaults otherwise
+EXPOSURE = -5  # set to zero for default, probably powers of 2 (-5 = 1/16)
 
-MAX_DIFFERENCE = 80
-TIME_THRESHOLD = 0.5
+# set detection parameters
+MINIMUM_CONTOUR_SIZE = 8000  # minimum pixel area for valid contours
+MAXIMUM_CONTOUR_SIZE = 100000  # maximum pixel area for valid contours
+DETECTION_BOX = ((580, 130), (850, 600))  # coordinates for the finish line bounding box
+
+# set identification parameters
+MAX_DIFFERENCE = 80  # maximum RGB difference to identify a car (0 - 768)
+TIME_THRESHOLD = 0.5  # minimum time difference before detecting a new lap
+
+
+
 
 
 def hsv_to_rgb(h, s, v):  # convert float HSV to byte RGB
@@ -37,36 +43,67 @@ def hsv_to_rgb(h, s, v):  # convert float HSV to byte RGB
         return v, p, q
 
 
-def difference(clr1, clr2):
+def average_colour(image, mask):  # averages some pixels in image where the corresponding pixel in mask is 255
+    width = image.shape[1]
+    height = image.shape[0]
+    r_total, g_total, b_total = (0, 0, 0)
+    pixel_count = 0
+    # the loop only uses every 4th row and column for speed
+    # it ignores the left and right 25% of the image
+    # it also ignores the top 10% and bottom 50% of the image
+    # this can provide better recognition if a car has different colours on the left and right side
+    # the x axis is expected to be perpendicular to the cars' direction of travel
+    for y in range(height // 10, height // 2, 4):
+        for x in range(width // 4, 3 * width // 4, 4):
+            if mask[y, x] == 255:
+                r_total += image[y, x][0]
+                g_total += image[y, x][1]
+                b_total += image[y, x][2]
+                pixel_count += 1
+    r_total = int(r_total / (pixel_count + 1))
+    g_total = int(g_total / (pixel_count + 1))
+    b_total = int(b_total / (pixel_count + 1))
+    clr = (r_total, g_total, b_total)
+
+
+def difference(clr1, clr2):  # find the sum of absolute differences between two RGB values (0 - 768)
     dif = 0
     for i in range(3):
-        dif += abs(clr1[i] - clr2[i]) * 100
+        dif += abs(clr1[i] - clr2[i])
     return dif
 
 
-def findcar(colour):  # returns the car index with the lowest color difference, or -1 if it is greater than MAX_DIFFERENCE
+def select_similar_colour(colour, colour_list, maximum_difference):  # returns the car index with the lowest color difference, or -1 if it is greater than MAX_DIFFERENCE
     minimum_value, minimum_index = -1, -1
-    for car_index in range(len(cars)):
-        current_difference = difference(cars[car_index], colour)
+    for car_index in range(len(colour_list)):
+        current_difference = difference(colour_list[car_index], colour)
         if current_difference < minimum_value or minimum_value < 0:
-            if current_difference < MAX_DIFFERENCE:
+            if current_difference < maximum_difference:
                 minimum_value = current_difference
                 minimum_index = car_index
     return minimum_index
 
 
 def timerecorded(clr, timestamp):
-    most_similar = findcar(clr)
+    most_similar = select_similar_colour(clr)
     pass
 
 
 def main():
+    # initialize parallel arrays to store car data
+    cars_colour = []  # RGB byte tuples for each car's colour
+    cars_best_lap = []  # int for each car's best lap in milliseconds
+    cars_num_laps = []  # int for each car's lap number
+    cars_last_time = []  # int for each car's last timestamp in milliseconds
+    cars_last_lap = []  # int for each car's last lap time in milliseconds
+
     # Initialize the video capture
-    cap = cv2.VideoCapture(1)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
-    cap.set(cv2.CAP_PROP_EXPOSURE, -5.0)  # fixed exposure at
+    cap = cv2.VideoCapture(VIDEO_DEVICE)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, RESOLUTION[0])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, RESOLUTION[1])
+    if EXPOSURE < 0:  # otherwise use defaults
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)  # turn automatic exposure off
+        cap.set(cv2.CAP_PROP_EXPOSURE, EXPOSURE)
     back_sub = cv2.createBackgroundSubtractorMOG2(history=150, varThreshold=25, detectShadows=True)
 
     kernel = np.ones((30, 30), np.uint8)
@@ -87,7 +124,7 @@ def main():
         contours, hierarchy = cv2.findContours(fg_mask_bb, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[-2:]
         areas = [cv2.contourArea(c) for c in contours]
         for i in range(len(areas)):
-            if areas[i] < smin or areas[i] > smax:
+            if areas[i] < MINIMUM_CONTOUR_SIZE or areas[i] > MAXIMUM_CONTOUR_SIZE:
                 contours[i] = None
 
         for c in contours:
@@ -95,30 +132,18 @@ def main():
                 continue
             cnt = c
             x, y, w, h = cv2.boundingRect(cnt)
-
             x2 = x + int(w / 2)
             y2 = y + int(h / 2)
 
-            if (x2, y2) > flag[0]:
-                if (x2, y2) < flag[1]:
+            if (x2, y2) > DETECTION_BOX[0]:
+                if (x2, y2) < DETECTION_BOX[1]:
                     currtime = time.time()
                     laptime = (int((currlap - prevlap) * 1000)) / 1000
                     col = back_sub.apply(frame)
                     col, col2 = col[y:y + h, x:x + w], frame[y:y + h, x:x + w]
                     cv2.imshow("clip", col2)
                     countpx = 0
-                    ra, ga, ba = (0, 0, 0)
-                    for y in range(h // 10, h // 2, 4):
-                        for x in range(w // 4, 3 * w // 4, 4):
-                            if col[y, x] == 255:
-                                ra += col2[y, x][0]
-                                ga += col2[y, x][1]
-                                ba += col2[y, x][2]
-                                countpx += 1
-                    ra = int(ra / (countpx + 1))
-                    ga = int(ga / (countpx + 1))
-                    ba = int(ba / (countpx + 1))
-                    clr = (ra, ga, ba)
+
                     timerecorded(clr, currtime)
                 cv2.circle(frame, (x2, y2), 8, clr, -1)
 
