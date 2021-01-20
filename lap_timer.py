@@ -1,21 +1,41 @@
 import cv2
 import time
 import sys
+import operator
+import coldiff
 
 # set camera parameters
-VIDEO_DEVICE = 1  # change this if the wrong camera is detected
-RESOLUTION = (1280, 720)  # the resolution must be supported by the camera, it uses defaults otherwise
+VIDEO_DEVICE = 1  # change this if the wrong camera is used
+RESOLUTION = (1280, 720)  # defaults if unsupported, but may crash because of invalid coordinates
 EXPOSURE = -5  # set to zero for default, probably powers of 2 (-5 = 1/16)
 MINIMUM_FRAME_TIME = 1000 / 30  # in milliseconds, to prevent duplicate frame processing
 
 # set detection parameters
-MINIMUM_CONTOUR_SIZE = 8000  # minimum pixel area for valid contours
+MINIMUM_CONTOUR_SIZE = 10000  # minimum pixel area for valid contours
 MAXIMUM_CONTOUR_SIZE = 100000  # maximum pixel area for valid contours
-DETECTION_BOX = ((580, 130), (850, 600))  # coordinates for the finish line bounding box
+DETECTION_BOX = ((750, 130), (850, 600))  # coordinates for the finish line bounding box
 
 # set identification parameters
-MAX_DIFFERENCE = 80  # maximum RGB difference to identify a car (0 - 768)
-TIME_THRESHOLD = 0.5  # minimum time difference before detecting a new lap
+MAX_DIFFERENCE = 14  # the sensitivity for detecting different cars
+TIME_THRESHOLD = 500  # minimum time difference before detecting a new lap (ms)
+
+# set colour averaging parameters
+# these specify how much of the cropped image is taken into account
+STEP_X = 4  # row step, higher is faster
+STEP_Y = 4  # column step, higher is faster
+MIN_Y = 20  # lower bound for y in percent
+MAX_Y = 50  # upper bound for y in percent
+MIN_X = 25  # lower bound for x in percent
+MAX_X = 75  # upper bound for x in percent
+
+# set graphics parameters (these settings are best for 1280x720)
+FONT_SCALE = 2  # arbitrary unit
+GRAPHIC_POSITION = "bottom"  # bottom or top
+GRAPHIC_HEIGHT = 100  # pixels
+MAX_COLUMNS = 4  # change if text does not fit
+TEXT_PADDING_X = 8  # pixels
+TEXT_PADDING_Y = 40  # pixels
+LITTLE_TEXT_PADDING = 10  # pixels
 
 
 def hsv_to_rgb(h, s, v):  # convert float HSV to byte RGB
@@ -46,13 +66,8 @@ def average_colour(image, mask):  # averages some pixels in image where the corr
     height = image.shape[0]
     r_total, g_total, b_total = (0, 0, 0)
     pixel_count = 0
-    # the loop only uses every 4th row and column for speed
-    # it ignores the left and right 25% of the image
-    # it also ignores the top 10% and bottom 50% of the image
-    # this can provide better recognition if a car has different colours on the left and right side
-    # the x axis is expected to be perpendicular to the cars' direction of travel
-    for y in range(height // 10, height // 2, 4):
-        for x in range(width // 4, 3 * width // 4, 4):
+    for y in range(MIN_Y * height // 100, MAX_Y * height // 100, STEP_Y):
+        for x in range(MIN_X * width // 100, MAX_X * width // 100, STEP_X):
             if mask[y, x] == 255:
                 r_total += image[y, x][0]
                 g_total += image[y, x][1]
@@ -64,40 +79,83 @@ def average_colour(image, mask):  # averages some pixels in image where the corr
     return r_total, g_total, b_total
 
 
-def difference(clr1, clr2):  # find the sum of absolute differences between two RGB values (0 - 768)
-    dif = 0
-    for i in range(3):
-        dif += abs(clr1[i] - clr2[i])
-    return dif
-
-
-def select_similar_colour(colour, colour_list, maximum_difference):  # returns the car index with the lowest color difference, or -1 if it is greater than MAX_DIFFERENCE
-    minimum_value, minimum_index = -1, -1
-    for car_index in range(len(colour_list)):
-        current_difference = difference(colour_list[car_index], colour)
-        if current_difference < minimum_value or minimum_value < 0:
-            if current_difference < maximum_difference:
-                minimum_value = current_difference
-                minimum_index = car_index
-    return minimum_index
-
-
-def record_time(colour, timestamp):
-    pass
-
-
 def current_time_ms():
     return int(time.time() * 1000)
 
 
-def main():
-    # initialize parallel arrays to store car data
-    cars_colour = []  # RGB byte tuples for each car's colour
-    cars_best_lap = []  # int for each car's best lap in milliseconds
-    cars_num_laps = []  # int for each car's lap number
-    cars_last_time = []  # int for each car's last timestamp in milliseconds
-    cars_last_lap = []  # int for each car's last lap time in milliseconds
+class Car():
 
+    def __init__(self):
+        self.colour = (0, 0, 0)
+        self.best_lap = 0
+        self.num_laps = 0  # the number of times a car has crossed the finish line, not complete laps
+        self.last_timestamp = 0  # the last time the car crossed the finish line (ms)
+        self.lap_times = []  # a list of the lap times in ms
+
+    def record_lap(self, colour, time_recorded):
+        if time_recorded > self.last_timestamp + TIME_THRESHOLD:
+            r_new, g_new, b_new = colour
+            r_old, g_old, b_old = self.colour
+            r = (r_old * self.num_laps + r_new) // (self.num_laps + 1)  # average the new colour with the old colours
+            g = (g_old * self.num_laps + g_new) // (self.num_laps + 1)  # average the new colour with the old colours
+            b = (b_old * self.num_laps + b_new) // (self.num_laps + 1)  # average the new colour with the old colours
+            self.colour = (r, g, b)
+            self.num_laps += 1
+            if self.last_timestamp != 0:
+                new_lap = time_recorded - self.last_timestamp
+                for old_lap in self.lap_times:
+                    if old_lap < new_lap:
+                        break
+                else:
+                    self.best_lap = new_lap
+                self.lap_times.append(new_lap)
+            self.last_timestamp = time_recorded
+
+    def difference(self, colour):  # difference between black and white is about 58
+        colour_lab = coldiff.rgb2lab(colour)
+        own_colour_lab = coldiff.rgb2lab(self.colour)
+        return coldiff.cie94(colour_lab, own_colour_lab)
+
+
+def show_graphic(image, car_list):
+    car_list.sort(key=operator.attrgetter("num_laps"))
+    car_list.reverse()
+    valid_cars = sum([1 for i in car_list if i.lap_times])
+    number_of_columns = min(valid_cars, MAX_COLUMNS)
+    if number_of_columns == 0:
+        return image
+    for i in range(number_of_columns):
+        x1 = (i * RESOLUTION[0]) // number_of_columns
+        x2 = ((i + 1) * RESOLUTION[0]) // number_of_columns
+        if GRAPHIC_POSITION == 'bottom':
+            y2 = RESOLUTION[1]
+        else:
+            y2 = GRAPHIC_HEIGHT
+        y1 = y2 - GRAPHIC_HEIGHT
+        colour = car_list[i].colour
+        if (colour[0] * 0.299 + colour[1] * 0.587 + colour[2] * 0.114) > 186:
+            text_colour = (0, 0, 0)
+        else:
+            text_colour = (255, 255, 255)
+        text = str((car_list[i].lap_times[-1] // 10) / 100)
+        image = cv2.rectangle(image, (x1, y1), (x2, y2), colour, -1)
+        image = cv2.putText(image, text, (x1 + TEXT_PADDING_X, y2 - TEXT_PADDING_Y), cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, text_colour, 3)
+    return image
+
+
+def select_car(colour, car_list):
+    minimum_difference = 0
+    minimum_index = -1
+    for i in range(len(car_list)):
+        difference = car_list[i].difference(colour)
+        if (difference < minimum_difference or minimum_index == -1) and difference < MAX_DIFFERENCE:
+            minimum_index = i
+            minimum_difference = difference
+    print(car_list, minimum_index)
+    return minimum_index
+
+
+def main():
     # Initialize the video capture
     capture = cv2.VideoCapture(VIDEO_DEVICE)
     capture.set(cv2.CAP_PROP_FRAME_WIDTH, RESOLUTION[0])
@@ -110,10 +168,11 @@ def main():
     # initialize the last frame time
     last_frame_time = current_time_ms()
 
+    car_list = []
     while True:
         # code below is executed for every frame
 
-        if last_frame_time + 20 > current_time_ms():  # checks whether the minimum frame time elapsed
+        if last_frame_time + MINIMUM_FRAME_TIME > current_time_ms():  # checks whether the minimum frame time elapsed
             continue
         last_frame_time = current_time_ms()
 
@@ -122,7 +181,7 @@ def main():
         if not return_value:
             print("The frame could not be captured.", file=sys.stderr)
             break
-        cv2.imshow('frame', frame)
+
         # make a motion_mask and process it
         motion_mask = background_subtractor.apply(frame)
         motion_mask = cv2.medianBlur(motion_mask, 5)  # blur the mask to reduce noise
@@ -130,9 +189,8 @@ def main():
         cv2.imshow("Slot Car Lap Timer: Motion Mask", motion_mask)  # optionally show motion_mask in a separate window
 
         # find contours
-
-        contours = cv2.findContours(motion_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[-8:][0] # checks a maximum of 8 contours
-        contour_areas = [0 for c in contours]#contour_areas = [cv2.contourArea(c) for c in contours]
+        contours = cv2.findContours(motion_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[-8:][0]  # checks a maximum of 8 contours
+        contour_areas = [cv2.contourArea(c) for c in contours]
         for i in range(len(contour_areas)):
             if contour_areas[i] < MINIMUM_CONTOUR_SIZE or contour_areas[i] > MAXIMUM_CONTOUR_SIZE:
                 contours[i] = None  # invalidate the contour if it is too large or small
@@ -149,20 +207,24 @@ def main():
             if (x_center, y_center) > DETECTION_BOX[0]:
                 if (x_center, y_center) < DETECTION_BOX[1]:
                     time_detected = current_time_ms()
-                    mask_clip = background_subtractor.apply(frame)
                     # create cropped clips of the captured motion
-                    mask_clip, frame_clip = mask_clip[y:y + h, x:x + w], frame[y:y + h, x:x + w]
-                    # cv2.imshow("clip", frame_clip) #  display the captured motion clip for debugging
-                    countpx = 0
+                    mask_clip, frame_clip = motion_mask[y:y + h, x:x + w], frame[y:y + h, x:x + w]
+                    cv2.imshow("clip", frame_clip)  # display the captured motion clip for debugging
+                    colour = average_colour(frame_clip, mask_clip)
+                    car_index = select_car(colour, car_list)
+                    if car_index == -1:
+                        car_list.append(Car())
+                    car_list[car_index].record_lap(colour, time_detected)
+                    frame = cv2.circle(frame, (x_center, y_center), 8, (255, 255, 255), -1)
 
-                    record_time((0, 0, 0), time_detected)
-                cv2.circle(frame, (x_center, y_center), 8, (255, 255, 255), -1)
-
-        # frame = cv2.rectangle(frame, flag[0], flag[1], clr)
+        frame = cv2.rectangle(frame, (0, 0), (100, 100), colour, -1)
+        # draw the detection box on the image
+        frame = cv2.rectangle(frame, DETECTION_BOX[0], DETECTION_BOX[1], (255, 255, 255))
+        frame = show_graphic(frame, car_list)
         # frame = cv2.rectangle(frame, (0, 620), (320, 720), cars[1], -1)
         # frame = cv2.rectangle(frame, (320, 620), (640, 720), cars[2], -1)
-        # frame = cv2.rectangle(frame, (640, 620), (720, 960), cars[3], -1)
-        # frame = cv2.rectangle(frame, (640, 620), (960, 1280), cars[4], -1)
+        # frame = cv2.rectangle(frame, (640, 620), (960, 720), cars[3], -1)
+        # frame = cv2.rectangle(frame, (960, 620), (1280, 720), cars[4], -1)
         # frame = cv2.putText(frame, str(laptime), (8, 705), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 2, cv2.LINE_AA)
         cv2.imshow('frame', frame)
 
