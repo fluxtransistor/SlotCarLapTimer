@@ -1,4 +1,4 @@
-# SlotCars
+# Slot Car Lap Timer
 
 This is a Python program with OpenCV that grabs a webcam image and uses it to count lap times on a slot car racetrack.
 
