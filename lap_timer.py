@@ -131,8 +131,8 @@ def main():
 
         # find contours
 
-        contours = cv2.findContours(motion_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[-2:][1]  # checks a maximum of 6 contours
-        contour_areas = [cv2.contourArea(c) for c in contours]
+        contours = cv2.findContours(motion_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[-6:][0] # checks a maximum of 6 contours
+        contour_areas = [0 for c in contours]#contour_areas = [cv2.contourArea(c) for c in contours]
         for i in range(len(contour_areas)):
             if contour_areas[i] < MINIMUM_CONTOUR_SIZE or contour_areas[i] > MAXIMUM_CONTOUR_SIZE:
                 contours[i] = None  # invalidate the contour if it is too large or small
